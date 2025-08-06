@@ -1,0 +1,13 @@
+[project]
+name = "np-likeness-prediction"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.7",
+    "ty>=0.0.1a16",
+]
