@@ -6,7 +6,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 import lightning as L
-import wandb
 from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
@@ -14,6 +13,7 @@ from lightning.pytorch.callbacks import (
 )
 from lightning.pytorch.loggers import WandbLogger
 
+import wandb
 from src.data import SMILESDataModule
 from src.model import create_model
 
@@ -65,11 +65,11 @@ def parse_args():
 
     # Training arguments
     parser.add_argument(
-        "--learning_rate", type=float, default=5e-4, help="Learning rate"
+        "--learning_rate", type=float, default=1e-4, help="Learning rate"
     )
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument(
-        "--max_epochs", type=int, default=10, help="Maximum number of epochs"
+        "--max_epochs", type=int, default=20, help="Maximum number of epochs"
     )
     parser.add_argument("--warmup_steps", type=int, default=1000, help="Warmup steps")
     parser.add_argument(
@@ -123,10 +123,10 @@ def parse_args():
         help="Checkpoint directory",
     )
     parser.add_argument(
-        "--save_top_k", type=int, default=3, help="Save top k checkpoints"
+        "--save_top_k", type=int, default=1, help="Save top k checkpoints"
     )
     parser.add_argument(
-        "--patience", type=int, default=5, help="Early stopping patience"
+        "--patience", type=int, default=10, help="Early stopping patience"
     )
 
     # Hardware arguments
@@ -231,7 +231,7 @@ def main():
     print("\nInitializing data module...")
     data_module = SMILESDataModule(
         data_dir=args.data_dir,
-        model_name=args.tokenizer_name,
+        tokenizer_name=args.tokenizer_name,
         batch_size=args.batch_size,
         max_length=args.max_length,
         num_workers=args.num_workers,

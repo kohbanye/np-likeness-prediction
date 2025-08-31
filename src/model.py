@@ -133,7 +133,13 @@ class BaseLanguageModel(L.LightningModule):
         """Calculate perplexity for a single SMILES string."""
         self.eval()
         with torch.no_grad():
-            inputs = self.tokenize_smiles([smiles])
+            inputs = self.tokenizer(
+                [smiles],
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
             input_ids = inputs["input_ids"].to(self.device)
             attention_mask = inputs["attention_mask"].to(self.device)
 
@@ -151,7 +157,13 @@ class BaseLanguageModel(L.LightningModule):
         """Calculate log likelihood for a single SMILES string."""
         self.eval()
         with torch.no_grad():
-            inputs = self.tokenize_smiles([smiles])
+            inputs = self.tokenizer(
+                [smiles],
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
             input_ids = inputs["input_ids"].to(self.device)
             attention_mask = inputs["attention_mask"].to(self.device)
 
@@ -199,20 +211,21 @@ class GPT2Model(BaseLanguageModel):
         )
 
         # Initialize GPT-2 configuration
+        # Use CLS/SEP tokens for generation
         config = GPT2Config(
             vocab_size=len(self.tokenizer),
             n_embd=n_embd,
             n_layer=n_layer,
             n_head=n_head,
             n_positions=max_length,
-            bos_token_id=int(self.tokenizer.bos_token_id)
-            if isinstance(self.tokenizer.bos_token_id, int) or isinstance(self.tokenizer.bos_token_id, str)
-            else 0,
-            eos_token_id=int(self.tokenizer.eos_token_id)
-            if isinstance(self.tokenizer.eos_token_id, int) or isinstance(self.tokenizer.eos_token_id, str)
-            else 1,
+            bos_token_id=int(self.tokenizer.cls_token_id)  # Use [CLS] as BOS
+            if self.tokenizer.cls_token_id is not None
+            else 12,
+            eos_token_id=int(self.tokenizer.sep_token_id)  # Use [SEP] as EOS
+            if self.tokenizer.sep_token_id is not None
+            else 13,
             pad_token_id=int(self.tokenizer.pad_token_id)
-            if isinstance(self.tokenizer.pad_token_id, int) or isinstance(self.tokenizer.pad_token_id, str)
+            if self.tokenizer.pad_token_id is not None
             else 0,
         )
 
@@ -241,6 +254,7 @@ class LlamaModel(BaseLanguageModel):
         )
 
         # Initialize Llama configuration
+        # Use CLS/SEP tokens for generation (matching training data)
         config = LlamaConfig(
             vocab_size=len(self.tokenizer),
             hidden_size=hidden_size,
@@ -248,14 +262,14 @@ class LlamaModel(BaseLanguageModel):
             num_attention_heads=num_attention_heads,
             intermediate_size=intermediate_size,
             max_position_embeddings=max_length,
-            bos_token_id=int(self.tokenizer.bos_token_id)
-            if isinstance(self.tokenizer.bos_token_id, int) or isinstance(self.tokenizer.bos_token_id, str)
-            else 0,
-            eos_token_id=int(self.tokenizer.eos_token_id)
-            if isinstance(self.tokenizer.eos_token_id, int) or isinstance(self.tokenizer.eos_token_id, str)
-            else 1,
+            bos_token_id=int(self.tokenizer.cls_token_id)  # Use [CLS] as BOS
+            if self.tokenizer.cls_token_id is not None
+            else 12,
+            eos_token_id=int(self.tokenizer.sep_token_id)  # Use [SEP] as EOS
+            if self.tokenizer.sep_token_id is not None
+            else 13,
             pad_token_id=int(self.tokenizer.pad_token_id)
-            if isinstance(self.tokenizer.pad_token_id, int) or isinstance(self.tokenizer.pad_token_id, str)
+            if self.tokenizer.pad_token_id is not None
             else 0,
         )
 

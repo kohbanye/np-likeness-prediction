@@ -29,6 +29,7 @@ class SMILESDataset(Dataset):
             padding="max_length",
             max_length=self.max_length,
             return_tensors="pt",
+            add_special_tokens=True,
         )
         return {
             "input_ids": encoding["input_ids"].squeeze(),
@@ -41,7 +42,7 @@ class SMILESDataModule(L.LightningDataModule):
     def __init__(
         self,
         data_dir: str = "./data",
-        model_name: str = "gpt2",
+        tokenizer_name: str = "kohbanye/SmilesTokenizer_PubChem_1M",
         batch_size: int = 32,
         max_length: int = 128,
         num_workers: int = 4,
@@ -52,7 +53,7 @@ class SMILESDataModule(L.LightningDataModule):
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
-        self.model_name = model_name
+        self.tokenizer_name = tokenizer_name
         self.batch_size = batch_size
         self.max_length = max_length
         self.num_workers = num_workers
@@ -61,7 +62,7 @@ class SMILESDataModule(L.LightningDataModule):
         self.dataset_type = dataset_type
         self.max_samples = max_samples
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
