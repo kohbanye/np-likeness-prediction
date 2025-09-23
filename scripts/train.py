@@ -7,7 +7,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import lightning as L
 from lightning.pytorch.callbacks import (
-    EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
 )
@@ -39,13 +38,13 @@ def parse_args():
 
     # Model architecture arguments
     parser.add_argument(
-        "--n_embd", type=int, default=512, help="Embedding dimension (GPT-2)"
+        "--n_embd", type=int, default=576, help="Embedding dimension (GPT-2)"
     )
     parser.add_argument(
         "--n_layer", type=int, default=6, help="Number of layers (GPT-2)"
     )
     parser.add_argument(
-        "--n_head", type=int, default=8, help="Number of attention heads (GPT-2)"
+        "--n_head", type=int, default=12, help="Number of attention heads (GPT-2)"
     )
     parser.add_argument(
         "--hidden_size", type=int, default=512, help="Hidden size (Llama)"
@@ -65,11 +64,11 @@ def parse_args():
 
     # Training arguments
     parser.add_argument(
-        "--learning_rate", type=float, default=1e-4, help="Learning rate"
+        "--learning_rate", type=float, default=5e-4, help="Learning rate"
     )
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
     parser.add_argument(
-        "--max_epochs", type=int, default=20, help="Maximum number of epochs"
+        "--max_epochs", type=int, default=30, help="Maximum number of epochs"
     )
     parser.add_argument("--warmup_steps", type=int, default=1000, help="Warmup steps")
     parser.add_argument(
@@ -125,9 +124,6 @@ def parse_args():
     parser.add_argument(
         "--save_top_k", type=int, default=1, help="Save top k checkpoints"
     )
-    parser.add_argument(
-        "--patience", type=int, default=10, help="Early stopping patience"
-    )
 
     # Hardware arguments
     parser.add_argument(
@@ -136,6 +132,18 @@ def parse_args():
     parser.add_argument("--devices", type=str, default="auto", help="Devices to use")
     parser.add_argument(
         "--precision", type=str, default="16-mixed", help="Training precision"
+    )
+
+    # Data augmentation arguments
+    parser.add_argument(
+        "--randomize",
+        action="store_true",
+        help="Randomize SMILES strings during training for better robustness",
+    )
+    parser.add_argument(
+        "--canonical",
+        action="store_true",
+        help="Convert SMILES to canonical form before training",
     )
 
     # Other arguments
@@ -178,16 +186,6 @@ def setup_callbacks(args):
             auto_insert_metric_name=False,
         )
     callbacks.append(checkpoint_callback)
-
-    # Early stopping (only if validation set exists)
-    if args.val_split > 0:
-        early_stop_callback = EarlyStopping(
-            monitor="val_loss",
-            mode="min",
-            patience=args.patience,
-            verbose=True,
-        )
-        callbacks.append(early_stop_callback)
 
     # Learning rate monitoring
     lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -239,6 +237,8 @@ def main():
         test_split=args.test_split,
         dataset_type=args.dataset_type,
         max_samples=args.max_samples,
+        randomize=args.randomize,
+        canonical=args.canonical,
     )
 
     # Initialize model

@@ -7,34 +7,62 @@ import lightning as L
 import requests
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, DataCollatorForLanguageModeling
 
 
 class SMILESDataset(Dataset):
-    def __init__(self, smiles_list: list[str], tokenizer, max_length: int = 128):
+    def __init__(
+        self,
+        smiles_list: list[str],
+        tokenizer,
+        max_length: int = 512,
+        randomize: bool = False,
+        canonical: bool = False,
+    ):
         self.smiles_list = smiles_list
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.randomize = randomize
+        self.canonical = canonical
 
     def __len__(self):
         return len(self.smiles_list)
 
+    def _process_smiles(self, smiles: str) -> str:
+        """Process SMILES with optional canonicalization and randomization."""
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return smiles
+
+            if self.canonical:
+                smiles = Chem.MolToSmiles(mol, canonical=True)
+            elif self.randomize:
+                smiles = Chem.MolToSmiles(mol, doRandom=True, canonical=False)
+
+            return smiles
+        except Exception:
+            return smiles
+
     def __getitem__(self, idx):
         smiles = self.smiles_list[idx]
+
+        # Process SMILES if needed
+        smiles = self._process_smiles(smiles)
+
+        # Tokenize and return the full encoding dict (DataCollator needs this format)
         encoding = self.tokenizer(
             smiles,
             truncation=True,
             padding="max_length",
             max_length=self.max_length,
             return_tensors="pt",
-            add_special_tokens=True,
         )
         return {
-            "input_ids": encoding["input_ids"].squeeze(),
-            "attention_mask": encoding["attention_mask"].squeeze(),
-            "labels": encoding["input_ids"].squeeze(),
+            "input_ids": encoding.input_ids.squeeze(),
+            "attention_mask": encoding.attention_mask.squeeze(),
         }
 
 
@@ -44,12 +72,14 @@ class SMILESDataModule(L.LightningDataModule):
         data_dir: str = "./data",
         tokenizer_name: str = "kohbanye/SmilesTokenizer_PubChem_1M",
         batch_size: int = 32,
-        max_length: int = 128,
+        max_length: int = 512,
         num_workers: int = 4,
         val_split: float = 0.1,
         test_split: float = 0.1,
         dataset_type: str = "natural",  # "natural" or "synthetic"
         max_samples: int | None = None,
+        randomize: bool = False,
+        canonical: bool = False,
     ):
         super().__init__()
         self.data_dir = Path(data_dir)
@@ -61,10 +91,17 @@ class SMILESDataModule(L.LightningDataModule):
         self.test_split = test_split
         self.dataset_type = dataset_type
         self.max_samples = max_samples
+        self.randomize = randomize
+        self.canonical = canonical
 
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.collate_fn = DataCollatorForLanguageModeling(
+            tokenizer=self.tokenizer,
+            mlm=False,
+        )
 
         self.data_dir.mkdir(exist_ok=True)
 
@@ -200,13 +237,25 @@ class SMILESDataModule(L.LightningDataModule):
 
             # Create datasets from cached splits
             self.train_dataset = SMILESDataset(
-                train_smiles, self.tokenizer, self.max_length
+                train_smiles,
+                self.tokenizer,
+                self.max_length,
+                randomize=self.randomize,
+                canonical=self.canonical,
             )
             self.val_dataset = SMILESDataset(
-                val_smiles, self.tokenizer, self.max_length
+                val_smiles,
+                self.tokenizer,
+                self.max_length,
+                randomize=False,  # Don't randomize validation
+                canonical=self.canonical,
             )
             self.test_dataset = SMILESDataset(
-                test_smiles, self.tokenizer, self.max_length
+                test_smiles,
+                self.tokenizer,
+                self.max_length,
+                randomize=False,  # Don't randomize test
+                canonical=self.canonical,
             )
 
             print(
@@ -227,8 +276,6 @@ class SMILESDataModule(L.LightningDataModule):
             smiles_list = smiles_list[: self.max_samples]
 
         # Perform scaffold split
-        dataset = SMILESDataset(smiles_list, self.tokenizer, self.max_length)
-
         train_indices, val_indices, test_indices = self.scaffold_split(
             smiles_list, self.val_split, self.test_split
         )
@@ -252,9 +299,31 @@ class SMILESDataModule(L.LightningDataModule):
             f"Saved splits: train={len(train_smiles)}, val={len(val_smiles)}, test={len(test_smiles)}"
         )
 
-        self.train_dataset = Subset(dataset, train_indices)
-        self.val_dataset = Subset(dataset, val_indices)
-        self.test_dataset = Subset(dataset, test_indices)
+        train_smiles_selected = [smiles_list[i] for i in train_indices]
+        val_smiles_selected = [smiles_list[i] for i in val_indices]
+        test_smiles_selected = [smiles_list[i] for i in test_indices]
+
+        self.train_dataset = SMILESDataset(
+            train_smiles_selected,
+            self.tokenizer,
+            self.max_length,
+            randomize=self.randomize,
+            canonical=self.canonical,
+        )
+        self.val_dataset = SMILESDataset(
+            val_smiles_selected,
+            self.tokenizer,
+            self.max_length,
+            randomize=False,
+            canonical=self.canonical,
+        )
+        self.test_dataset = SMILESDataset(
+            test_smiles_selected,
+            self.tokenizer,
+            self.max_length,
+            randomize=False,
+            canonical=self.canonical,
+        )
 
     def train_dataloader(self):
         return DataLoader(
@@ -263,6 +332,7 @@ class SMILESDataModule(L.LightningDataModule):
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=self.collate_fn,
         )
 
     def val_dataloader(self):
@@ -272,6 +342,7 @@ class SMILESDataModule(L.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=self.collate_fn,
         )
 
     def test_dataloader(self):
@@ -281,4 +352,5 @@ class SMILESDataModule(L.LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            collate_fn=self.collate_fn,
         )

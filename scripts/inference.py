@@ -79,6 +79,18 @@ def main():
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Device to use (cuda/cpu)",
     )
+    parser.add_argument(
+        "--sigmoid-k",
+        type=float,
+        default=1.0,
+        help="Sigmoid function slope parameter for normalization (default: 1.0)",
+    )
+    parser.add_argument(
+        "--sigmoid-offset",
+        type=float,
+        default=0.0,
+        help="Sigmoid function offset parameter for normalization (default: 0.0)",
+    )
 
     args = parser.parse_args()
 
@@ -88,7 +100,12 @@ def main():
     synthetic_model = load_checkpoint(args.synthetic_checkpoint, args.device)
 
     # Create scorer
-    scorer = NPLikenessScorer(natural_model, synthetic_model)
+    scorer = NPLikenessScorer(
+        natural_model,
+        synthetic_model,
+        sigmoid_k=args.sigmoid_k,
+        sigmoid_offset=args.sigmoid_offset,
+    )
 
     # Calculate score
     print(f"\nEvaluating SMILES: {args.smiles}")
@@ -96,17 +113,12 @@ def main():
 
     # Print results
     print("\n=== NP-Likeness Score ===")
-    print(f"Score: {details['score']:.4f}")
+    print(f"Score: {details['score_normalized']:.4f}")
+    print(f"  (sigmoid_k={args.sigmoid_k}, sigmoid_offset={args.sigmoid_offset})")
     print(f"Log P(natural): {details['log_p_natural']:.4f}")
     print(f"Log P(synthetic): {details['log_p_synthetic']:.4f}")
     print(f"Perplexity (natural): {details['perplexity_natural']:.2f}")
     print(f"Perplexity (synthetic): {details['perplexity_synthetic']:.2f}")
-
-    # Interpretation
-    if details["score"] > 0:
-        print("\n→ Natural product-like (score > 0)")
-    else:
-        print("\n→ Synthetic-like (score < 0)")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import math
+
 import lightning as L
 import torch
 from torch.optim import AdamW
@@ -195,12 +197,12 @@ class BaseLanguageModel(L.LightningModule):
 class GPT2Model(BaseLanguageModel):
     def __init__(
         self,
-        n_embd: int = 768,
+        n_embd: int = 576,
         n_layer: int = 6,
         n_head: int = 12,
-        learning_rate: float = 5e-5,
+        learning_rate: float = 5e-4,
         warmup_steps: int = 1000,
-        max_length: int = 256,
+        max_length: int = 512,
         tokenizer_name: str = "kohbanye/SmilesTokenizer_PubChem_1M",
     ):
         super().__init__(
@@ -211,22 +213,16 @@ class GPT2Model(BaseLanguageModel):
         )
 
         # Initialize GPT-2 configuration
-        # Use CLS/SEP tokens for generation
         config = GPT2Config(
             vocab_size=len(self.tokenizer),
             n_embd=n_embd,
             n_layer=n_layer,
             n_head=n_head,
             n_positions=max_length,
-            bos_token_id=int(self.tokenizer.cls_token_id)  # Use [CLS] as BOS
-            if self.tokenizer.cls_token_id is not None
-            else 12,
-            eos_token_id=int(self.tokenizer.sep_token_id)  # Use [SEP] as EOS
-            if self.tokenizer.sep_token_id is not None
-            else 13,
-            pad_token_id=int(self.tokenizer.pad_token_id)
-            if self.tokenizer.pad_token_id is not None
-            else 0,
+            # for kohbanye/SmilesTokenizer_PubChem_1M tokenizer
+            bos_token_id=12,
+            eos_token_id=13,
+            pad_token_id=0,
         )
 
         # Initialize GPT-2 model
@@ -241,9 +237,9 @@ class LlamaModel(BaseLanguageModel):
         num_hidden_layers: int = 8,
         num_attention_heads: int = 16,
         intermediate_size: int = 2816,
-        learning_rate: float = 5e-5,
+        learning_rate: float = 5e-4,
         warmup_steps: int = 1000,
-        max_length: int = 256,
+        max_length: int = 512,
         tokenizer_name: str = "kohbanye/SmilesTokenizer_PubChem_1M",
     ):
         super().__init__(
@@ -254,7 +250,6 @@ class LlamaModel(BaseLanguageModel):
         )
 
         # Initialize Llama configuration
-        # Use CLS/SEP tokens for generation (matching training data)
         config = LlamaConfig(
             vocab_size=len(self.tokenizer),
             hidden_size=hidden_size,
@@ -262,15 +257,10 @@ class LlamaModel(BaseLanguageModel):
             num_attention_heads=num_attention_heads,
             intermediate_size=intermediate_size,
             max_position_embeddings=max_length,
-            bos_token_id=int(self.tokenizer.cls_token_id)  # Use [CLS] as BOS
-            if self.tokenizer.cls_token_id is not None
-            else 12,
-            eos_token_id=int(self.tokenizer.sep_token_id)  # Use [SEP] as EOS
-            if self.tokenizer.sep_token_id is not None
-            else 13,
-            pad_token_id=int(self.tokenizer.pad_token_id)
-            if self.tokenizer.pad_token_id is not None
-            else 0,
+            # for kohbanye/SmilesTokenizer_PubChem_1M tokenizer
+            bos_token_id=12,
+            eos_token_id=13,
+            pad_token_id=0,
         )
 
         # Initialize Llama model
@@ -284,9 +274,13 @@ class NPLikenessScorer:
         self,
         natural_model: BaseLanguageModel,
         synthetic_model: BaseLanguageModel,
+        sigmoid_k: float = 1.0,
+        sigmoid_offset: float = 0.0,
     ):
         self.natural_model = natural_model
         self.synthetic_model = synthetic_model
+        self.sigmoid_k = sigmoid_k
+        self.sigmoid_offset = sigmoid_offset
 
         # Ensure models are in eval mode
         self.natural_model.eval()
@@ -322,12 +316,42 @@ class NPLikenessScorer:
 
         return scores
 
+    def _sigmoid_normalize(self, llr: float) -> float:
+        """
+        Apply sigmoid normalization to log-likelihood ratio.
+
+        Args:
+            llr: Log-likelihood ratio (log P(x|natural) - log P(x|synthetic))
+
+        Returns:
+            Normalized score in range [0, 1]
+        """
+        adjusted_llr = llr + self.sigmoid_offset
+        return 1.0 / (1.0 + math.exp(-self.sigmoid_k * adjusted_llr))
+
+    def score_normalized(self, smiles: str) -> float:
+        """
+        Calculate normalized NP-likeness score for a SMILES string.
+
+        Returns score in range [0, 1] where:
+        - Values closer to 1 indicate more natural product-like
+        - Values closer to 0 indicate more synthetic-like
+        """
+        raw_score = self.score(smiles)
+        return self._sigmoid_normalize(raw_score)
+
+    def batch_score_normalized(self, smiles_list: list[str]) -> list[float]:
+        """Calculate normalized NP-likeness scores for a batch of SMILES strings."""
+        raw_scores = self.batch_score(smiles_list)
+        return [self._sigmoid_normalize(score) for score in raw_scores]
+
     def score_with_details(self, smiles: str) -> dict[str, float]:
         """
         Calculate NP-likeness score with detailed breakdown.
 
         Returns dictionary with:
-        - score: NP-likeness score
+        - score: Raw NP-likeness score (log-likelihood ratio)
+        - score_normalized: Normalized score in range [0, 1]
         - log_p_natural: Log likelihood under natural model
         - log_p_synthetic: Log likelihood under synthetic model
         - perplexity_natural: Perplexity under natural model
@@ -338,8 +362,12 @@ class NPLikenessScorer:
         perp_natural = self.natural_model.calculate_perplexity(smiles)
         perp_synthetic = self.synthetic_model.calculate_perplexity(smiles)
 
+        raw_score = log_p_natural - log_p_synthetic
+        normalized_score = self._sigmoid_normalize(raw_score)
+
         return {
-            "score": log_p_natural - log_p_synthetic,
+            "score": raw_score,
+            "score_normalized": normalized_score,
             "log_p_natural": log_p_natural,
             "log_p_synthetic": log_p_synthetic,
             "perplexity_natural": perp_natural,
