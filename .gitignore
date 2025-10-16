@@ -209,3 +209,6 @@ __marimo__/
 data
 checkpoints
 wandb
+
+npscorer.py
+publicnp.model*
