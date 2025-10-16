@@ -4,6 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import lightning as L
+import molvs
 import requests
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
@@ -105,6 +106,12 @@ class SMILESDataModule(L.LightningDataModule):
 
         self.data_dir.mkdir(exist_ok=True)
 
+    def _standardize_smiles(self, smiles: str) -> str:
+        try:
+            return molvs.standardize_smiles(smiles)
+        except Exception:
+            return smiles
+
     def download_coconut(self) -> Path:
         coconut_path = self.data_dir / "coconut.csv"
 
@@ -131,6 +138,14 @@ class SMILESDataModule(L.LightningDataModule):
         return coconut_path
 
     def prepare_data(self):
+        smiles_file = self.data_dir / f"{self.dataset_type}_all.smi"
+
+        if smiles_file.exists():
+            print(f"Loading cached SMILES for {self.dataset_type} dataset")
+            with open(smiles_file, "r") as f:
+                smiles_list = [line.strip() for line in f]
+            return
+
         if self.dataset_type == "natural":
             filepath = self.download_coconut()
 
@@ -169,9 +184,10 @@ class SMILESDataModule(L.LightningDataModule):
             smiles_list = smiles_list[: self.max_samples]
 
         # Save processed SMILES
-        smiles_file = self.data_dir / f"{self.dataset_type}_smiles.txt"
+        smiles_file = self.data_dir / f"{self.dataset_type}_all.smi"
         with open(smiles_file, "w") as f:
-            for smiles in smiles_list:
+            for smiles in tqdm(smiles_list, desc="Standardizing and saving SMILES"):
+                smiles = self._standardize_smiles(smiles)
                 f.write(smiles + "\n")
 
         print(f"Prepared {len(smiles_list)} SMILES for {self.dataset_type} dataset")

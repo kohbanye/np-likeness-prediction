@@ -2,8 +2,10 @@ import math
 
 import lightning as L
 import torch
+from rdkit import Chem
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
     BatchEncoding,
@@ -155,7 +157,7 @@ class BaseLanguageModel(L.LightningModule):
 
         return perplexity
 
-    def calculate_log_likelihood(self, smiles: str) -> float:
+    def _calculate_log_likelihood(self, smiles: str) -> float:
         """Calculate log likelihood for a single SMILES string."""
         self.eval()
         with torch.no_grad():
@@ -181,15 +183,76 @@ class BaseLanguageModel(L.LightningModule):
             # Return log likelihood (negative of NLL)
             return -nll
 
-    def batch_calculate_log_likelihood(self, smiles_list: list[str]) -> list[float]:
-        """Calculate log likelihood for a batch of SMILES strings."""
+    def _calculate_log_likelihoods_batch(self, smiles_list: list[str]) -> list[float]:
+        """Calculate log likelihoods for a batch of SMILES (internal helper)."""
+        inputs = self.tokenizer(
+            smiles_list,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs["attention_mask"].to(self.device)
+
+        # Labels are the same as input_ids for language modeling
+        labels = input_ids.clone()
+        # Mask padding tokens in labels
+        labels[labels == self.tokenizer.pad_token_id] = -100
+
+        # Get logits from model
+        outputs = self(input_ids, attention_mask, labels=None)
+        logits = outputs.logits  # shape: (batch_size, seq_len, vocab_size)
+
+        # Shift logits and labels for next-token prediction
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+
+        # Calculate loss per sample
+        loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+        # Reshape for loss calculation
+        shift_logits_flat = shift_logits.view(-1, shift_logits.size(-1))
+        shift_labels_flat = shift_labels.view(-1)
+
+        # Get per-token losses
+        per_token_loss = loss_fct(shift_logits_flat, shift_labels_flat)
+        per_token_loss = per_token_loss.view(shift_labels.size())
+
+        # Calculate per-sample loss (average over non-padding tokens)
+        # mask out padding tokens (where labels == -100)
+        mask = (shift_labels != -100).float()
+        per_sample_loss = (per_token_loss * mask).sum(dim=1) / mask.sum(dim=1)
+
+        # Convert to log likelihoods (negative of loss)
+        log_likelihoods = (-per_sample_loss).cpu().tolist()
+
+        return log_likelihoods
+
+    def batch_calculate_log_likelihood(
+        self, smiles_list: list[str], batch_size: int = 1000
+    ) -> list[float]:
+        """
+        Calculate log likelihood for a batch of SMILES strings.
+
+        Args:
+            smiles_list: List of SMILES strings
+            batch_size: Number of SMILES to process at once (default: 1000)
+
+        Returns:
+            List of log likelihoods
+        """
         self.eval()
         log_likelihoods = []
 
         with torch.no_grad():
-            for smiles in smiles_list:
-                ll = self.calculate_log_likelihood(smiles)
-                log_likelihoods.append(ll)
+            # Process in chunks to avoid memory issues
+            for i in tqdm(
+                range(0, len(smiles_list), batch_size),
+                desc="Calculating log likelihoods",
+            ):
+                batch = smiles_list[i : i + batch_size]
+                batch_lls = self._calculate_log_likelihoods_batch(batch)
+                log_likelihoods.extend(batch_lls)
 
         return log_likelihoods
 
@@ -286,6 +349,12 @@ class NPLikenessScorer:
         self.natural_model.eval()
         self.synthetic_model.eval()
 
+    def _process_smiles(self, smiles: str) -> str:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES: {smiles}")
+        return Chem.MolToSmiles(mol, doRandom=True, canonical=False)
+
     def score(self, smiles: str) -> float:
         """
         Calculate NP-likeness score for a SMILES string.
@@ -295,13 +364,17 @@ class NPLikenessScorer:
         Higher scores indicate more natural product-like.
         Lower scores indicate more synthetic-like.
         """
-        log_p_natural = self.natural_model.calculate_log_likelihood(smiles)
-        log_p_synthetic = self.synthetic_model.calculate_log_likelihood(smiles)
+        smiles = self._process_smiles(smiles)
+
+        log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
+        log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
 
         return log_p_natural - log_p_synthetic
 
     def batch_score(self, smiles_list: list[str]) -> list[float]:
         """Calculate NP-likeness scores for a batch of SMILES strings."""
+        smiles_list = [self._process_smiles(smiles) for smiles in smiles_list]
+
         log_p_natural_list = self.natural_model.batch_calculate_log_likelihood(
             smiles_list
         )
@@ -337,6 +410,8 @@ class NPLikenessScorer:
         - Values closer to 1 indicate more natural product-like
         - Values closer to 0 indicate more synthetic-like
         """
+        smiles = self._process_smiles(smiles)
+
         raw_score = self.score(smiles)
         return self._sigmoid_normalize(raw_score)
 
@@ -357,8 +432,10 @@ class NPLikenessScorer:
         - perplexity_natural: Perplexity under natural model
         - perplexity_synthetic: Perplexity under synthetic model
         """
-        log_p_natural = self.natural_model.calculate_log_likelihood(smiles)
-        log_p_synthetic = self.synthetic_model.calculate_log_likelihood(smiles)
+        smiles = self._process_smiles(smiles)
+
+        log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
+        log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
         perp_natural = self.natural_model.calculate_perplexity(smiles)
         perp_synthetic = self.synthetic_model.calculate_perplexity(smiles)
 
