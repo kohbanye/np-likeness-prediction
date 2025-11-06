@@ -66,6 +66,7 @@ class ScoreRequest(BaseModel):
     model_type: Literal["gpt2", "llama"] = "gpt2"
     sigmoid_k: float = 1.0
     sigmoid_offset: float = 0.0
+    scaffold_only: bool = False
 
 
 class ScoreResponse(BaseModel):
@@ -85,6 +86,7 @@ class BatchScoreRequest(BaseModel):
     model_type: Literal["gpt2", "llama"] = "gpt2"
     sigmoid_k: float = 1.0
     sigmoid_offset: float = 0.0
+    scaffold_only: bool = False
 
 
 class BatchScoreItem(BaseModel):
@@ -124,6 +126,7 @@ def score(req: ScoreRequest):
             synthetic_model,
             sigmoid_k=req.sigmoid_k,
             sigmoid_offset=req.sigmoid_offset,
+            scaffold_only=req.scaffold_only,
         )
 
         details = scorer.score_with_details(req.smiles)
@@ -157,6 +160,7 @@ def score_batch(req: BatchScoreRequest):
             synthetic_model,
             sigmoid_k=req.sigmoid_k,
             sigmoid_offset=req.sigmoid_offset,
+            scaffold_only=req.scaffold_only,
         )
 
         results: list[BatchScoreItem] = []

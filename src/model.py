@@ -3,6 +3,7 @@ import math
 import lightning as L
 import torch
 from rdkit import Chem
+from rdkit.Chem.Scaffolds import MurckoScaffold
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
@@ -339,20 +340,43 @@ class NPLikenessScorer:
         synthetic_model: BaseLanguageModel,
         sigmoid_k: float = 1.0,
         sigmoid_offset: float = 0.0,
+        scaffold_only: bool = False,
     ):
         self.natural_model = natural_model
         self.synthetic_model = synthetic_model
         self.sigmoid_k = sigmoid_k
         self.sigmoid_offset = sigmoid_offset
+        self.scaffold_only = scaffold_only
 
         # Ensure models are in eval mode
         self.natural_model.eval()
         self.synthetic_model.eval()
 
+    def _extract_scaffold(self, smiles: str) -> str:
+        """Extract Bemis-Murcko scaffold from SMILES."""
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                return smiles  # Return original if parsing fails
+            scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+            return Chem.MolToSmiles(scaffold, isomericSmiles=False)
+        except Exception:
+            return smiles  # Return original if scaffold extraction fails
+
     def _process_smiles(self, smiles: str) -> str:
+        """Process SMILES with optional scaffold extraction."""
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             raise ValueError(f"Invalid SMILES: {smiles}")
+
+        # Extract scaffold if scaffold_only mode is enabled
+        if self.scaffold_only:
+            try:
+                scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+                mol = scaffold
+            except Exception:
+                pass  # Keep original molecule if scaffold extraction fails
+
         return Chem.MolToSmiles(mol, doRandom=True, canonical=False)
 
     def score(self, smiles: str) -> float:

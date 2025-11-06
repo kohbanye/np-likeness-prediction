@@ -145,6 +145,11 @@ def parse_args():
         action="store_true",
         help="Convert SMILES to canonical form before training",
     )
+    parser.add_argument(
+        "--scaffold_only",
+        action="store_true",
+        help="Train on Bemis-Murcko scaffolds only instead of full molecules",
+    )
 
     # Other arguments
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -162,11 +167,14 @@ def setup_callbacks(args):
     """Setup training callbacks."""
     callbacks = []
 
+    # Create checkpoint directory name with scaffold suffix if needed
+    scaffold_suffix = "_scaffold" if args.scaffold_only else ""
+    checkpoint_dirname = f"{args.model_type}_{args.dataset_type}{scaffold_suffix}"
+
     # Model checkpointing
     if args.val_split > 0:
         checkpoint_callback = ModelCheckpoint(
-            dirpath=Path(args.checkpoint_dir)
-            / f"{args.model_type}_{args.dataset_type}",
+            dirpath=Path(args.checkpoint_dir) / checkpoint_dirname,
             filename="{epoch:02d}-{val_loss:.4f}",
             monitor="val_loss",
             mode="min",
@@ -176,8 +184,7 @@ def setup_callbacks(args):
         )
     else:
         checkpoint_callback = ModelCheckpoint(
-            dirpath=Path(args.checkpoint_dir)
-            / f"{args.model_type}_{args.dataset_type}",
+            dirpath=Path(args.checkpoint_dir) / checkpoint_dirname,
             filename="{epoch:02d}-{train_loss:.4f}",
             monitor="train_loss",
             mode="min",
@@ -196,15 +203,21 @@ def setup_callbacks(args):
 
 def setup_logger(args):
     """Setup experiment logger."""
-    run_name = args.run_name or f"{args.model_type}_{args.dataset_type}"
+    scaffold_suffix = "_scaffold" if args.scaffold_only else ""
+    run_name = args.run_name or f"{args.model_type}_{args.dataset_type}{scaffold_suffix}"
 
     # Create config dict for wandb
     config = vars(args).copy()
 
+    # Create tags list with scaffold_only tag if enabled
+    tags = [args.model_type, args.dataset_type]
+    if args.scaffold_only:
+        tags.append("scaffold_only")
+
     logger = WandbLogger(
         project=args.project_name,
         name=run_name,
-        tags=[args.model_type, args.dataset_type],
+        tags=tags,
         config=config,  # Log all hyperparameters
         log_model=True,  # Log model checkpoints to wandb
     )
@@ -239,6 +252,7 @@ def main():
         max_samples=args.max_samples,
         randomize=args.randomize,
         canonical=args.canonical,
+        scaffold_only=args.scaffold_only,
     )
 
     # Initialize model
@@ -304,9 +318,10 @@ def main():
     # trainer.test(model=model, datamodule=data_module, ckpt_path="best")
 
     # Save final model
+    scaffold_suffix = "_scaffold" if args.scaffold_only else ""
     final_model_path = (
         Path(args.checkpoint_dir)
-        / f"{args.model_type}_{args.dataset_type}"
+        / f"{args.model_type}_{args.dataset_type}{scaffold_suffix}"
         / "final_model.ckpt"
     )
     trainer.save_checkpoint(final_model_path)

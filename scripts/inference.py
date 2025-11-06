@@ -91,6 +91,11 @@ def main():
         default=0.0,
         help="Sigmoid function offset parameter for normalization (default: 0.0)",
     )
+    parser.add_argument(
+        "--scaffold_only",
+        action="store_true",
+        help="Extract and score Bemis-Murcko scaffolds only",
+    )
 
     args = parser.parse_args()
 
@@ -105,6 +110,7 @@ def main():
         synthetic_model,
         sigmoid_k=args.sigmoid_k,
         sigmoid_offset=args.sigmoid_offset,
+        scaffold_only=args.scaffold_only,
     )
 
     # Calculate score
