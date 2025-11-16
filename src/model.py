@@ -341,12 +341,22 @@ class NPLikenessScorer:
         sigmoid_k: float = 1.0,
         sigmoid_offset: float = 0.0,
         scaffold_only: bool = False,
+        scoring_mode: str = "ratio",
     ):
         self.natural_model = natural_model
         self.synthetic_model = synthetic_model
         self.sigmoid_k = sigmoid_k
         self.sigmoid_offset = sigmoid_offset
         self.scaffold_only = scaffold_only
+        self.scoring_mode = scoring_mode
+
+        # Validate scoring_mode
+        valid_modes = ["ratio", "natural_only", "synthetic_only"]
+        if scoring_mode not in valid_modes:
+            raise ValueError(
+                f"Invalid scoring_mode: {scoring_mode}. "
+                f"Must be one of {valid_modes}"
+            )
 
         # Ensure models are in eval mode
         self.natural_model.eval()
@@ -383,33 +393,51 @@ class NPLikenessScorer:
         """
         Calculate NP-likeness score for a SMILES string.
 
-        Score = log P(x|natural) - log P(x|synthetic)
+        Scoring modes:
+        - "ratio": log P(x|natural) - log P(x|synthetic) (default)
+        - "natural_only": log P(x|natural)
+        - "synthetic_only": log P(x|synthetic)
 
-        Higher scores indicate more natural product-like.
-        Lower scores indicate more synthetic-like.
+        For "ratio" mode:
+        - Higher scores indicate more natural product-like.
+        - Lower scores indicate more synthetic-like.
         """
         smiles = self._process_smiles(smiles)
 
-        log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
-        log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
-
-        return log_p_natural - log_p_synthetic
+        if self.scoring_mode == "ratio":
+            log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
+            log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
+            return log_p_natural - log_p_synthetic
+        elif self.scoring_mode == "natural_only":
+            return self.natural_model._calculate_log_likelihood(smiles)
+        elif self.scoring_mode == "synthetic_only":
+            return self.synthetic_model._calculate_log_likelihood(smiles)
+        else:
+            # This should never happen due to validation in __init__
+            raise ValueError(f"Invalid scoring_mode: {self.scoring_mode}")
 
     def batch_score(self, smiles_list: list[str]) -> list[float]:
         """Calculate NP-likeness scores for a batch of SMILES strings."""
         smiles_list = [self._process_smiles(smiles) for smiles in smiles_list]
 
-        log_p_natural_list = self.natural_model.batch_calculate_log_likelihood(
-            smiles_list
-        )
-        log_p_synthetic_list = self.synthetic_model.batch_calculate_log_likelihood(
-            smiles_list
-        )
-
-        scores = [
-            log_p_nat - log_p_syn
-            for log_p_nat, log_p_syn in zip(log_p_natural_list, log_p_synthetic_list)
-        ]
+        if self.scoring_mode == "ratio":
+            log_p_natural_list = self.natural_model.batch_calculate_log_likelihood(
+                smiles_list
+            )
+            log_p_synthetic_list = self.synthetic_model.batch_calculate_log_likelihood(
+                smiles_list
+            )
+            scores = [
+                log_p_nat - log_p_syn
+                for log_p_nat, log_p_syn in zip(log_p_natural_list, log_p_synthetic_list)
+            ]
+        elif self.scoring_mode == "natural_only":
+            scores = self.natural_model.batch_calculate_log_likelihood(smiles_list)
+        elif self.scoring_mode == "synthetic_only":
+            scores = self.synthetic_model.batch_calculate_log_likelihood(smiles_list)
+        else:
+            # This should never happen due to validation in __init__
+            raise ValueError(f"Invalid scoring_mode: {self.scoring_mode}")
 
         return scores
 
