@@ -32,7 +32,7 @@ def parse_args():
         "--dataset_type",
         type=str,
         required=True,
-        choices=["natural", "synthetic"],
+        choices=["natural", "synthetic", "general"],
         help="Type of dataset to train on",
     )
 

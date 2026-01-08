@@ -201,8 +201,31 @@ class SMILESDataModule(L.LightningDataModule):
                         if smiles and len(smiles) < 500:
                             smiles_list.append(smiles)
 
+        elif self.dataset_type == "general":
+            filepath = self.data_dir / "chembl35.txt"
+
+            if not filepath.exists():
+                raise FileNotFoundError(
+                    f"ChEMBL data file not found at {filepath}. "
+                    "Please ensure chembl35.txt is in the data directory."
+                )
+
+            # Read SMILES from ChEMBL file (tab-separated: SMILES\tCHEMBL_ID)
+            smiles_list = []
+            with open(filepath, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:  # Skip empty lines
+                        continue
+
+                    parts = line.split('\t')
+                    if len(parts) >= 1:  # At least SMILES column
+                        smiles = parts[0]  # First column is SMILES
+                        if smiles and len(smiles) < 500:
+                            smiles_list.append(smiles)
+
         else:
-            raise ValueError(f"Unknown dataset type: {self.dataset_type}")
+            raise ValueError(f"Unknown dataset type: {self.dataset_type}. Must be 'natural', 'synthetic', or 'general'")
 
         if self.max_samples:
             smiles_list = smiles_list[: self.max_samples]

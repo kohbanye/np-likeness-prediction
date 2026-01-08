@@ -338,6 +338,8 @@ class NPLikenessScorer:
         self,
         natural_model: BaseLanguageModel,
         synthetic_model: BaseLanguageModel,
+        general_model: BaseLanguageModel | None = None,
+        alpha: float = 0.5,
         sigmoid_k: float = 1.0,
         sigmoid_offset: float = 0.0,
         scaffold_only: bool = False,
@@ -345,22 +347,36 @@ class NPLikenessScorer:
     ):
         self.natural_model = natural_model
         self.synthetic_model = synthetic_model
+        self.general_model = general_model
+        self.alpha = alpha
         self.sigmoid_k = sigmoid_k
         self.sigmoid_offset = sigmoid_offset
         self.scaffold_only = scaffold_only
         self.scoring_mode = scoring_mode
 
+        # Validate alpha
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError(f"alpha must be in range [0, 1], got {alpha}")
+
         # Validate scoring_mode
-        valid_modes = ["ratio", "natural_only", "synthetic_only"]
+        valid_modes = ["ratio", "natural_only", "synthetic_only", "weighted"]
         if scoring_mode not in valid_modes:
             raise ValueError(
                 f"Invalid scoring_mode: {scoring_mode}. "
                 f"Must be one of {valid_modes}"
             )
 
+        # Validate weighted mode requirements
+        if scoring_mode == "weighted" and general_model is None:
+            raise ValueError(
+                "scoring_mode='weighted' requires general_model to be provided"
+            )
+
         # Ensure models are in eval mode
         self.natural_model.eval()
         self.synthetic_model.eval()
+        if self.general_model is not None:
+            self.general_model.eval()
 
     def _extract_scaffold(self, smiles: str) -> str:
         """Extract Bemis-Murcko scaffold from SMILES."""
@@ -389,6 +405,37 @@ class NPLikenessScorer:
 
         return Chem.MolToSmiles(mol, doRandom=True, canonical=False)
 
+    def _log_weighted_mixture(self, log_p_syn: float, log_p_gen: float) -> float:
+        """
+        Compute log(α * P_syn + (1-α) * P_gen) using log-sum-exp trick.
+
+        Args:
+            log_p_syn: Log probability under synthetic model
+            log_p_gen: Log probability under general model
+
+        Returns:
+            Log of the weighted mixture probability
+        """
+        import math
+
+        # Handle edge cases
+        if self.alpha == 1.0:
+            return log_p_syn
+        if self.alpha == 0.0:
+            return log_p_gen
+
+        # Log-sum-exp trick for numerical stability
+        max_log_p = max(log_p_syn, log_p_gen)
+        log_alpha = math.log(self.alpha)
+        log_one_minus_alpha = math.log(1.0 - self.alpha)
+
+        result = max_log_p + math.log(
+            math.exp(log_alpha + log_p_syn - max_log_p) +
+            math.exp(log_one_minus_alpha + log_p_gen - max_log_p)
+        )
+
+        return result
+
     def score(self, smiles: str) -> float:
         """
         Calculate NP-likeness score for a SMILES string.
@@ -397,10 +444,11 @@ class NPLikenessScorer:
         - "ratio": log P(x|natural) - log P(x|synthetic) (default)
         - "natural_only": log P(x|natural)
         - "synthetic_only": log P(x|synthetic)
+        - "weighted": log P(x|natural) - log(α*P(x|synthetic) + (1-α)*P(x|general))
 
-        For "ratio" mode:
+        For "ratio" and "weighted" modes:
         - Higher scores indicate more natural product-like.
-        - Lower scores indicate more synthetic-like.
+        - Lower scores indicate more synthetic/general-like.
         """
         smiles = self._process_smiles(smiles)
 
@@ -408,10 +456,20 @@ class NPLikenessScorer:
             log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
             log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
             return log_p_natural - log_p_synthetic
+
+        elif self.scoring_mode == "weighted":
+            log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
+            log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
+            log_p_general = self.general_model._calculate_log_likelihood(smiles)
+            log_mixture = self._log_weighted_mixture(log_p_synthetic, log_p_general)
+            return log_p_natural - log_mixture
+
         elif self.scoring_mode == "natural_only":
             return self.natural_model._calculate_log_likelihood(smiles)
+
         elif self.scoring_mode == "synthetic_only":
             return self.synthetic_model._calculate_log_likelihood(smiles)
+
         else:
             # This should never happen due to validation in __init__
             raise ValueError(f"Invalid scoring_mode: {self.scoring_mode}")
@@ -431,10 +489,30 @@ class NPLikenessScorer:
                 log_p_nat - log_p_syn
                 for log_p_nat, log_p_syn in zip(log_p_natural_list, log_p_synthetic_list)
             ]
+
+        elif self.scoring_mode == "weighted":
+            log_p_natural_list = self.natural_model.batch_calculate_log_likelihood(
+                smiles_list
+            )
+            log_p_synthetic_list = self.synthetic_model.batch_calculate_log_likelihood(
+                smiles_list
+            )
+            log_p_general_list = self.general_model.batch_calculate_log_likelihood(
+                smiles_list
+            )
+            scores = [
+                log_p_nat - self._log_weighted_mixture(log_p_syn, log_p_gen)
+                for log_p_nat, log_p_syn, log_p_gen in zip(
+                    log_p_natural_list, log_p_synthetic_list, log_p_general_list
+                )
+            ]
+
         elif self.scoring_mode == "natural_only":
             scores = self.natural_model.batch_calculate_log_likelihood(smiles_list)
+
         elif self.scoring_mode == "synthetic_only":
             scores = self.synthetic_model.batch_calculate_log_likelihood(smiles_list)
+
         else:
             # This should never happen due to validation in __init__
             raise ValueError(f"Invalid scoring_mode: {self.scoring_mode}")
@@ -477,12 +555,17 @@ class NPLikenessScorer:
         Calculate NP-likeness score with detailed breakdown.
 
         Returns dictionary with:
-        - score: Raw NP-likeness score (log-likelihood ratio)
+        - score: Raw NP-likeness score
         - score_normalized: Normalized score in range [0, 1]
         - log_p_natural: Log likelihood under natural model
         - log_p_synthetic: Log likelihood under synthetic model
         - perplexity_natural: Perplexity under natural model
         - perplexity_synthetic: Perplexity under synthetic model
+
+        If general_model is provided:
+        - log_p_general: Log likelihood under general model
+        - perplexity_general: Perplexity under general model
+        - log_mixture: Log of weighted mixture (only if scoring_mode='weighted')
         """
         smiles = self._process_smiles(smiles)
 
@@ -491,17 +574,32 @@ class NPLikenessScorer:
         perp_natural = self.natural_model.calculate_perplexity(smiles)
         perp_synthetic = self.synthetic_model.calculate_perplexity(smiles)
 
-        raw_score = log_p_natural - log_p_synthetic
-        normalized_score = self._sigmoid_normalize(raw_score)
-
-        return {
-            "score": raw_score,
-            "score_normalized": normalized_score,
+        result = {
             "log_p_natural": log_p_natural,
             "log_p_synthetic": log_p_synthetic,
             "perplexity_natural": perp_natural,
             "perplexity_synthetic": perp_synthetic,
         }
+
+        # Add general model details if available
+        if self.general_model is not None:
+            log_p_general = self.general_model._calculate_log_likelihood(smiles)
+            perp_general = self.general_model.calculate_perplexity(smiles)
+            result["log_p_general"] = log_p_general
+            result["perplexity_general"] = perp_general
+
+            if self.scoring_mode == "weighted":
+                log_mixture = self._log_weighted_mixture(log_p_synthetic, log_p_general)
+                result["log_mixture"] = log_mixture
+
+        # Calculate raw score using current scoring mode
+        raw_score = self.score(smiles)
+        normalized_score = self._sigmoid_normalize(raw_score)
+
+        result["score"] = raw_score
+        result["score_normalized"] = normalized_score
+
+        return result
 
 
 def create_model(model_type: str = "gpt2", **kwargs) -> BaseLanguageModel:

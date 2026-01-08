@@ -96,6 +96,25 @@ def main():
         action="store_true",
         help="Extract and score Bemis-Murcko scaffolds only",
     )
+    parser.add_argument(
+        "--general-checkpoint",
+        type=str,
+        default=None,
+        help="Path to general model checkpoint (optional)",
+    )
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="Mixing parameter for weighted scoring: α*P_syn + (1-α)*P_gen (default: 0.5)",
+    )
+    parser.add_argument(
+        "--scoring-mode",
+        type=str,
+        default=None,
+        help="Scoring mode: ratio, natural_only, synthetic_only, or weighted. "
+             "If not specified, uses 'weighted' when general model is provided, otherwise 'ratio'",
+    )
 
     args = parser.parse_args()
 
@@ -104,13 +123,32 @@ def main():
     natural_model = load_checkpoint(args.natural_checkpoint, args.device)
     synthetic_model = load_checkpoint(args.synthetic_checkpoint, args.device)
 
+    # Load general model if provided
+    general_model = None
+    if args.general_checkpoint:
+        print(f"Loading general model from {args.general_checkpoint}...")
+        general_model = load_checkpoint(args.general_checkpoint, args.device)
+
+    # Determine scoring mode
+    if args.scoring_mode is None:
+        scoring_mode = "weighted" if general_model is not None else "ratio"
+    else:
+        scoring_mode = args.scoring_mode
+
+    print(f"Using scoring mode: {scoring_mode}")
+    if scoring_mode == "weighted":
+        print(f"  Alpha (mixing parameter): {args.alpha}")
+
     # Create scorer
     scorer = NPLikenessScorer(
         natural_model,
         synthetic_model,
+        general_model=general_model,
+        alpha=args.alpha,
         sigmoid_k=args.sigmoid_k,
         sigmoid_offset=args.sigmoid_offset,
         scaffold_only=args.scaffold_only,
+        scoring_mode=scoring_mode,
     )
 
     # Calculate score
@@ -119,12 +157,21 @@ def main():
 
     # Print results
     print("\n=== NP-Likeness Score ===")
+    print(f"Scoring mode: {scoring_mode}")
     print(f"Score: {details['score_normalized']:.4f}")
     print(f"  (sigmoid_k={args.sigmoid_k}, sigmoid_offset={args.sigmoid_offset})")
     print(f"Log P(natural): {details['log_p_natural']:.4f}")
     print(f"Log P(synthetic): {details['log_p_synthetic']:.4f}")
     print(f"Perplexity (natural): {details['perplexity_natural']:.2f}")
     print(f"Perplexity (synthetic): {details['perplexity_synthetic']:.2f}")
+
+    if general_model is not None:
+        print(f"Log P(general): {details['log_p_general']:.4f}")
+        print(f"Perplexity (general): {details['perplexity_general']:.2f}")
+
+        if scoring_mode == "weighted":
+            print(f"Alpha: {args.alpha}")
+            print(f"Log mixture: {details.get('log_mixture', 'N/A'):.4f}")
 
 
 if __name__ == "__main__":
