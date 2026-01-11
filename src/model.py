@@ -339,7 +339,6 @@ class NPLikenessScorer:
         natural_model: BaseLanguageModel,
         synthetic_model: BaseLanguageModel,
         general_model: BaseLanguageModel | None = None,
-        alpha: float = 0.5,
         sigmoid_k: float = 1.0,
         sigmoid_offset: float = 0.0,
         scaffold_only: bool = False,
@@ -348,22 +347,16 @@ class NPLikenessScorer:
         self.natural_model = natural_model
         self.synthetic_model = synthetic_model
         self.general_model = general_model
-        self.alpha = alpha
         self.sigmoid_k = sigmoid_k
         self.sigmoid_offset = sigmoid_offset
         self.scaffold_only = scaffold_only
         self.scoring_mode = scoring_mode
 
-        # Validate alpha
-        if not 0.0 <= alpha <= 1.0:
-            raise ValueError(f"alpha must be in range [0, 1], got {alpha}")
-
         # Validate scoring_mode
         valid_modes = ["ratio", "natural_only", "synthetic_only", "weighted"]
         if scoring_mode not in valid_modes:
             raise ValueError(
-                f"Invalid scoring_mode: {scoring_mode}. "
-                f"Must be one of {valid_modes}"
+                f"Invalid scoring_mode: {scoring_mode}. Must be one of {valid_modes}"
             )
 
         # Validate weighted mode requirements
@@ -405,33 +398,50 @@ class NPLikenessScorer:
 
         return Chem.MolToSmiles(mol, doRandom=True, canonical=False)
 
-    def _log_weighted_mixture(self, log_p_syn: float, log_p_gen: float) -> float:
+    def _calculate_dynamic_alpha(
+        self, log_p_synthetic: float, log_p_general: float
+    ) -> float:
+        """
+        Calculate dynamic alpha based on log likelihoods.
+
+        Args:
+            log_p_synthetic: Log probability under synthetic model
+            log_p_general: Log probability under general model
+
+        Returns:
+            Dynamic alpha value in range [0, 1]
+        """
+        diff = log_p_synthetic - log_p_general
+        return 1.0 / (1.0 + math.exp(-diff))
+
+    def _log_weighted_mixture(
+        self, log_p_syn: float, log_p_gen: float, alpha: float
+    ) -> float:
         """
         Compute log(α * P_syn + (1-α) * P_gen) using log-sum-exp trick.
 
         Args:
             log_p_syn: Log probability under synthetic model
             log_p_gen: Log probability under general model
+            alpha: Weighting factor (dynamic or fixed)
 
         Returns:
             Log of the weighted mixture probability
         """
-        import math
-
         # Handle edge cases
-        if self.alpha == 1.0:
+        if alpha == 1.0:
             return log_p_syn
-        if self.alpha == 0.0:
+        if alpha == 0.0:
             return log_p_gen
 
         # Log-sum-exp trick for numerical stability
         max_log_p = max(log_p_syn, log_p_gen)
-        log_alpha = math.log(self.alpha)
-        log_one_minus_alpha = math.log(1.0 - self.alpha)
+        log_alpha = math.log(alpha)
+        log_one_minus_alpha = math.log(1.0 - alpha)
 
         result = max_log_p + math.log(
-            math.exp(log_alpha + log_p_syn - max_log_p) +
-            math.exp(log_one_minus_alpha + log_p_gen - max_log_p)
+            math.exp(log_alpha + log_p_syn - max_log_p)
+            + math.exp(log_one_minus_alpha + log_p_gen - max_log_p)
         )
 
         return result
@@ -461,7 +471,11 @@ class NPLikenessScorer:
             log_p_natural = self.natural_model._calculate_log_likelihood(smiles)
             log_p_synthetic = self.synthetic_model._calculate_log_likelihood(smiles)
             log_p_general = self.general_model._calculate_log_likelihood(smiles)
-            log_mixture = self._log_weighted_mixture(log_p_synthetic, log_p_general)
+            # Calculate dynamic alpha
+            alpha = self._calculate_dynamic_alpha(log_p_synthetic, log_p_general)
+            log_mixture = self._log_weighted_mixture(
+                log_p_synthetic, log_p_general, alpha
+            )
             return log_p_natural - log_mixture
 
         elif self.scoring_mode == "natural_only":
@@ -487,7 +501,9 @@ class NPLikenessScorer:
             )
             scores = [
                 log_p_nat - log_p_syn
-                for log_p_nat, log_p_syn in zip(log_p_natural_list, log_p_synthetic_list)
+                for log_p_nat, log_p_syn in zip(
+                    log_p_natural_list, log_p_synthetic_list
+                )
             ]
 
         elif self.scoring_mode == "weighted":
@@ -500,12 +516,14 @@ class NPLikenessScorer:
             log_p_general_list = self.general_model.batch_calculate_log_likelihood(
                 smiles_list
             )
-            scores = [
-                log_p_nat - self._log_weighted_mixture(log_p_syn, log_p_gen)
-                for log_p_nat, log_p_syn, log_p_gen in zip(
-                    log_p_natural_list, log_p_synthetic_list, log_p_general_list
-                )
-            ]
+            scores = []
+            for log_p_nat, log_p_syn, log_p_gen in zip(
+                log_p_natural_list, log_p_synthetic_list, log_p_general_list
+            ):
+                # Calculate dynamic alpha for each sample
+                alpha = self._calculate_dynamic_alpha(log_p_syn, log_p_gen)
+                log_mixture = self._log_weighted_mixture(log_p_syn, log_p_gen, alpha)
+                scores.append(log_p_nat - log_mixture)
 
         elif self.scoring_mode == "natural_only":
             scores = self.natural_model.batch_calculate_log_likelihood(smiles_list)
@@ -589,8 +607,12 @@ class NPLikenessScorer:
             result["perplexity_general"] = perp_general
 
             if self.scoring_mode == "weighted":
-                log_mixture = self._log_weighted_mixture(log_p_synthetic, log_p_general)
+                alpha = self._calculate_dynamic_alpha(log_p_synthetic, log_p_general)
+                log_mixture = self._log_weighted_mixture(
+                    log_p_synthetic, log_p_general, alpha
+                )
                 result["log_mixture"] = log_mixture
+                result["dynamic_alpha"] = alpha
 
         # Calculate raw score using current scoring mode
         raw_score = self.score(smiles)
