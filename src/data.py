@@ -218,14 +218,16 @@ class SMILESDataModule(L.LightningDataModule):
                     if not line:  # Skip empty lines
                         continue
 
-                    parts = line.split('\t')
+                    parts = line.split("\t")
                     if len(parts) >= 1:  # At least SMILES column
                         smiles = parts[0]  # First column is SMILES
                         if smiles and len(smiles) < 500:
                             smiles_list.append(smiles)
 
         else:
-            raise ValueError(f"Unknown dataset type: {self.dataset_type}. Must be 'natural', 'synthetic', or 'general'")
+            raise ValueError(
+                f"Unknown dataset type: {self.dataset_type}. Must be 'natural', 'synthetic', or 'general'"
+            )
 
         if self.max_samples:
             smiles_list = smiles_list[: self.max_samples]
